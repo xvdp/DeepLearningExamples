@@ -15,9 +15,9 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-import torch
 import ctypes
 import logging
+import torch
 
 import numpy as np
 
@@ -26,30 +26,29 @@ from nvidia.dali.pipeline import Pipeline
 import nvidia.dali.ops as ops
 import nvidia.dali.types as types
 
-import time
-
-
+# pylint: disable=not-callable
+# pylint: disable=no-member
 class COCOPipeline(Pipeline):
     def __init__(self, batch_size, device_id, file_root, annotations_file, num_gpus,
-            output_fp16=False, output_nhwc=False, pad_output=False, num_threads=1, seed=15):
+                 output_fp16=False, output_nhwc=False, pad_output=False, num_threads=1, seed=15):
         super(COCOPipeline, self).__init__(batch_size=batch_size, device_id=device_id,
-                                           num_threads=num_threads, seed = seed)
+                                           num_threads=num_threads, seed=seed)
 
         if torch.distributed.is_initialized():
             shard_id = torch.distributed.get_rank()
         else:
             shard_id = 0
 
-        self.input = ops.COCOReader(file_root = file_root, annotations_file = annotations_file,
-                            shard_id = shard_id, num_shards = num_gpus, ratio=True, ltrb=True, random_shuffle=True,
-                                    skip_empty=True)
-        self.decode = ops.ImageDecoder(device = "cpu", output_type = types.RGB)
+        self.input = ops.COCOReader(file_root=file_root, annotations_file=annotations_file,
+                                    shard_id=shard_id, num_shards=num_gpus, ratio=True, ltrb=True,
+                                    random_shuffle=True, skip_empty=True)
+        self.decode = ops.ImageDecoder(device="cpu", output_type=types.RGB)
 
         # Augumentation techniques
         self.crop = ops.SSDRandomCrop(device="cpu", num_attempts=1)
         self.twist = ops.ColorTwist(device="gpu")
 
-        self.resize = ops.Resize(device = "gpu", resize_x = 300, resize_y = 300)
+        self.resize = ops.Resize(device="gpu", resize_x=300, resize_y=300)
 
         output_dtype = types.FLOAT16 if output_fp16 else types.FLOAT
         output_layout = types.NHWC if output_nhwc else types.NCHW
@@ -58,14 +57,14 @@ class COCOPipeline(Pipeline):
                                                  mean=[0.0, 0.0, 0.0],
                                                  std=[255.0, 255.0, 255.0],
                                                  mirror=0,
-                                                 output_dtype=output_dtype,
+                                                 dtype=output_dtype,
                                                  output_layout=output_layout,
                                                  pad_output=pad_output)
 
         # Random variables
-        self.rng1 = ops.Uniform(range=[0.5, 1.5])
-        self.rng2 = ops.Uniform(range=[0.875, 1.125])
-        self.rng3 = ops.Uniform(range=[-0.5, 0.5])
+        self.rng1 = ops.random.Uniform(range=[0.5, 1.5])
+        self.rng2 = ops.random.Uniform(range=[0.875, 1.125])
+        self.rng3 = ops.random.Uniform(range=[-0.5, 0.5])
 
     def define_graph(self):
         saturation = self.rng1()
@@ -108,7 +107,7 @@ def feed_ndarray(dali_tensor, arr):
     """
     assert dali_tensor.shape() == list(arr.size()), \
             ("Shapes do not match: DALI tensor has size {0}"
-            ", but PyTorch Tensor has size {1}".format(dali_tensor.shape(), list(arr.size())))
+             ", but PyTorch Tensor has size {1}".format(dali_tensor.shape(), list(arr.size())))
     #turn raw int to a c void pointer
     c_type_pointer = ctypes.c_void_p(arr.data_ptr())
     dali_tensor.copy_to_external(c_type_pointer)
@@ -250,7 +249,7 @@ class DALICOCOIterator(object):
         """
         Returns the next batch of data.
         """
-        return self.__next__();
+        return self.__next__()
 
     def __iter__(self):
         return self
