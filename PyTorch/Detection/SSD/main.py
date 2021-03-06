@@ -24,7 +24,7 @@ from src.model import SSD300, ResNet, Loss
 from src.utils import dboxes300_coco, Encoder
 from src.logger import Logger, BenchLogger
 from src.evaluate import evaluate
-from src.train import train_loop, tencent_trick, load_checkpoint, benchmark_train_loop, benchmark_inference_loop
+from src.train import train_loop, tencent_trick, load_checkpoint, benchmark_train_loop, benchmark_inference_loop, simple_decay
 from src.data import get_train_loader, get_val_dataset, get_val_dataloader, get_coco_ground_truth
 
 import dllogger as DLLogger
@@ -39,6 +39,7 @@ try:
 except ImportError:
     raise ImportError("Please install APEX from https://github.com/nvidia/apex")
 
+# pylint: disable=not-callable
 def generate_mean_std(args):
     mean_val = [0.485, 0.456, 0.406]
     std_val = [0.229, 0.224, 0.225]
@@ -108,14 +109,22 @@ def make_parser():
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--amp', action='store_true',
                         help='Whether to enable AMP ops. When false, uses TF32 on A100 and FP32 on V100 GPUS.')
+
     parser.add_argument('--json-summary', type=str, default=None,
                         help='If provided, the json summary will be written to'
                              'the specified file.')
 
     # Distributed
-    parser.add_argument('--local_rank', default=os.getenv('LOCAL_RANK',0), type=int,
+    parser.add_argument('--local_rank', default=os.getenv('LOCAL_RANK', 0), type=int,
                         help='Used for multi-process training. Can either be manually set ' +
-                             'or automatically set by using \'python -m multiproc\'.')
+                        'or automatically set by using \'python -m multiproc\'.')
+
+    # Extra Args
+    parser.add_argument('--simple-decay', action='store_true',
+                        help='Disable Tencent Trick on hyperparameter decay,'
+                        'i.e. permit decay of biases and bnorm params')
+    parser.add_argument('--learning-rate-fixed', '--lrfix', action='store_true',
+                        help='disable default learning rate linear scaling n_gpu*32/batch_size.')
 
     return parser
 
@@ -145,19 +154,20 @@ def train(train_loop_func, logger, args):
     torch.manual_seed(args.seed)
     np.random.seed(seed=args.seed)
 
-
     # Setup data, defaults
     dboxes = dboxes300_coco()
     encoder = Encoder(dboxes)
     cocoGt = get_coco_ground_truth(args)
 
     train_loader = get_train_loader(args, args.seed - 2**31)
-
     val_dataset = get_val_dataset(args)
     val_dataloader = get_val_dataloader(val_dataset, args)
 
     ssd300 = SSD300(backbone=ResNet(args.backbone, args.backbone_path))
-    args.learning_rate = args.learning_rate * args.N_gpu * (args.batch_size / 32)
+
+    # disable linear lr scaling arg --learning-rate-fixed
+    if not args.learning_rate_fixed:
+        args.learning_rate = args.learning_rate * args.N_gpu * (args.batch_size / 32)
     start_epoch = 0
     iteration = 0
     loss_func = Loss(dboxes)
@@ -166,8 +176,10 @@ def train(train_loop_func, logger, args):
         ssd300.cuda()
         loss_func.cuda()
 
-    optimizer = torch.optim.SGD(tencent_trick(ssd300), lr=args.learning_rate,
-                                    momentum=args.momentum, weight_decay=args.weight_decay)
+    # disable tecent trick arg --simple-decay
+    _model_params = simple_decay(ssd300) if args.simple_decay else tencent_trick(ssd300)
+    optimizer = torch.optim.SGD(_model_params, lr=args.learning_rate,
+                                momentum=args.momentum, weight_decay=args.weight_decay)
     scheduler = MultiStepLR(optimizer=optimizer, milestones=args.multistep, gamma=0.1)
     if args.amp:
         ssd300, optimizer = amp.initialize(ssd300, optimizer, opt_level='O2')
@@ -203,8 +215,8 @@ def train(train_loop_func, logger, args):
     for epoch in range(start_epoch, args.epochs):
         start_epoch_time = time.time()
         scheduler.step()
-        iteration = train_loop_func(ssd300, loss_func, epoch, optimizer, train_loader, val_dataloader, encoder, iteration,
-                                    logger, args, mean, std)
+        iteration = train_loop_func(ssd300, loss_func, epoch, optimizer, train_loader,
+                                    val_dataloader, encoder, iteration, logger, args, mean, std)
         end_epoch_time = time.time() - start_epoch_time
         total_time += end_epoch_time
 
@@ -232,7 +244,7 @@ def train(train_loop_func, logger, args):
             torch.save(obj, save_path)
             logger.log('model path', save_path)
         train_loader.reset()
-    DLLogger.log((), { 'total time': total_time })
+    DLLogger.log((), {'total time': total_time})
     logger.log_summary()
 
 

@@ -18,7 +18,7 @@ import time
 from SSD import _C as C
 
 from apex import amp
-
+# pylint: disable=no-member
 def train_loop(model, loss_func, epoch, optim, train_dataloader, val_dataloader, encoder, iteration, logger, args, mean, std):
 #     for nbatch, (img, _, img_size, bbox, label) in enumerate(train_dataloader):
     for nbatch, data in enumerate(train_dataloader):
@@ -235,3 +235,14 @@ def tencent_trick(model):
             decay.append(param)
     return [{'params': no_decay, 'weight_decay': 0.0},
             {'params': decay}]
+
+def simple_decay(model):
+    """ Decay mode not using tencent trick
+    """
+    params = []
+    for _, param in model.named_parameters():
+        if not param.requires_grad:
+            continue  # frozen weights
+        else:
+            params.append(param)
+    return [{"params":params}]
